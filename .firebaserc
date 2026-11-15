@@ -1,0 +1,6 @@
+{
+  "projects": {
+    "default": "reemgym",
+    "ai": "reemgym-ai"
+  }
+}
