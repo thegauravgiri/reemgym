@@ -10,6 +10,7 @@ import 'services/food_analyzer.dart';
 import 'services/key_store.dart';
 import 'services/research_store.dart';
 import 'services/step_service.dart';
+import 'services/theme_store.dart';
 import 'theme.dart';
 
 /// The app's backing services. In preview mode (Firebase not configured yet)
@@ -21,6 +22,9 @@ class Services {
   final StepService steps;
   final KeyStore keys;
   final ResearchStore research;
+
+  /// Light, dark or system appearance, saved per device.
+  final ThemeStore theme;
   final bool preview;
 
   Services({
@@ -31,11 +35,12 @@ class Services {
     required this.keys,
     required this.research,
     required this.preview,
-  });
+    ThemeStore? theme,
+  }) : theme = theme ?? MemoryThemeStore();
 
   /// [keys] defaults to an in-memory store; the real app passes the secure
   /// one so a personal Gemini key works even before Firebase is connected.
-  factory Services.preview({KeyStore? keys}) {
+  factory Services.preview({KeyStore? keys, ThemeStore? theme}) {
     final store = keys ?? MemoryKeyStore();
     return Services(
       auth: MemoryAuthService(),
@@ -45,6 +50,7 @@ class Services {
       keys: store,
       research: NoResearchStore(),
       preview: true,
+      theme: theme,
     );
   }
 
@@ -64,16 +70,24 @@ class ReemGymApp extends StatelessWidget {
   final Services services;
   const ReemGymApp({super.key, required this.services});
 
+  // Built once so switching modes only swaps between two fixed themes.
+  static final _light = buildTheme(Brightness.light);
+  static final _dark = buildTheme(Brightness.dark);
+
   @override
   Widget build(BuildContext context) {
     return _ServicesScope(
       services: services,
-      child: MaterialApp(
-        title: 'ReemGym',
-        debugShowCheckedModeBanner: false,
-        theme: buildTheme(Brightness.light),
-        darkTheme: buildTheme(Brightness.dark),
-        home: const _Root(),
+      child: ValueListenableBuilder<ThemeMode>(
+        valueListenable: services.theme.mode,
+        builder: (context, mode, _) => MaterialApp(
+          title: 'ReemGym',
+          debugShowCheckedModeBanner: false,
+          theme: _light,
+          darkTheme: _dark,
+          themeMode: mode,
+          home: const _Root(),
+        ),
       ),
     );
   }

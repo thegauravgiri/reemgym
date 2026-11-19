@@ -32,19 +32,26 @@ class LogTarget {
       );
 }
 
-/// Takes or picks a photo, then runs it through the analyzer.
-Future<void> logFromPhoto(
-  BuildContext context,
-  LogTarget target,
-  ImageSource source,
-) async {
+/// Opens the camera or gallery. Tests replace this, since the real picker
+/// can't run there.
+@visibleForTesting
+Future<XFile?> Function(ImageSource source) pickMealPhoto = (source) =>
+    ImagePicker().pickImage(source: source, maxWidth: 1024, imageQuality: 70);
+
+/// A meal photo the user just took or picked.
+class _Photo {
+  final Uint8List bytes;
+  final String mimeType;
+  final ImageSource source;
+  const _Photo(this.bytes, this.mimeType, this.source);
+}
+
+/// Takes or picks a photo. Returns null if the user cancelled, or if the
+/// picker failed (the user has then been told why).
+Future<_Photo?> _takePhoto(BuildContext context, ImageSource source) async {
   final XFile? file;
   try {
-    file = await ImagePicker().pickImage(
-      source: source,
-      maxWidth: 1280,
-      imageQuality: 75,
-    );
+    file = await pickMealPhoto(source);
   } catch (e) {
     if (context.mounted) {
       showMessage(
@@ -54,20 +61,98 @@ Future<void> logFromPhoto(
             : 'Could not open your photos. $e',
       );
     }
-    return;
+    return null;
   }
-  if (file == null || !context.mounted) return;
+  if (file == null || !context.mounted) return null;
   final bytes = await file.readAsBytes();
-  if (!context.mounted) return;
+  return _Photo(bytes, file.mimeType ?? 'image/jpeg', source);
+}
+
+/// Takes or picks a photo, then runs it through the analyzer.
+Future<void> logFromPhoto(
+  BuildContext context,
+  LogTarget target,
+  ImageSource source,
+) async {
+  final photo = await _takePhoto(context, source);
+  if (photo == null || !context.mounted) return;
   await Navigator.of(context).push(
     MaterialPageRoute<void>(
       builder: (_) => AnalyzeScreen(
         target: target,
-        image: bytes,
-        mimeType: file!.mimeType ?? 'image/jpeg',
+        image: photo.bytes,
+        mimeType: photo.mimeType,
+        photoSource: photo.source,
       ),
     ),
   );
+}
+
+/// Lets the user swap the current meal photo for a new one: asks for the
+/// camera or gallery (the one used last comes first), then replaces the
+/// current screen with a fresh analysis, so Back still leads to where the
+/// meal was started. Returns false if the user backed out, leaving them
+/// where they were.
+Future<bool> _retakePhoto(
+  BuildContext context,
+  LogTarget target,
+  ImageSource? lastSource,
+) async {
+  final source = await showModalBottomSheet<ImageSource>(
+    context: context,
+    builder: (sheet) {
+      final theme = Theme.of(sheet);
+      final first = lastSource ?? ImageSource.camera;
+      Widget tile(ImageSource s) => ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 24),
+        autofocus: s == first,
+        leading: Icon(
+          s == ImageSource.camera
+              ? Icons.photo_camera_rounded
+              : Icons.photo_library_rounded,
+          color: theme.colorScheme.primary,
+        ),
+        title: Text(
+          s == ImageSource.camera ? 'Take a new photo' : 'Choose from gallery',
+          style: theme.textTheme.titleMedium,
+        ),
+        onTap: () => Navigator.pop(sheet, s),
+      );
+      return SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+              child: Text('Retake photo', style: theme.textTheme.titleLarge),
+            ),
+            tile(first),
+            tile(
+              first == ImageSource.camera
+                  ? ImageSource.gallery
+                  : ImageSource.camera,
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      );
+    },
+  );
+  if (source == null || !context.mounted) return false;
+  final photo = await _takePhoto(context, source);
+  if (photo == null || !context.mounted) return false;
+  Navigator.of(context).pushReplacement(
+    MaterialPageRoute<void>(
+      builder: (_) => AnalyzeScreen(
+        target: target,
+        image: photo.bytes,
+        mimeType: photo.mimeType,
+        photoSource: photo.source,
+      ),
+    ),
+  );
+  return true;
 }
 
 /// Asks the user to describe a meal in words, then analyzes the description.
@@ -231,12 +316,16 @@ class AnalyzeScreen extends StatefulWidget {
   final String mimeType;
   final String? description;
 
+  /// Where [image] came from, so a retake can offer the same source first.
+  final ImageSource? photoSource;
+
   const AnalyzeScreen({
     super.key,
     required this.target,
     this.image,
     this.mimeType = 'image/jpeg',
     this.description,
+    this.photoSource,
   });
 
   @override
@@ -247,6 +336,49 @@ class _AnalyzeScreenState extends State<AnalyzeScreen> {
   String? _error;
   bool _quota = false;
   bool _started = false;
+
+  /// The user is choosing a new photo; a result that arrives meanwhile is
+  /// held in [_pending] instead of opening the review screen.
+  bool _retaking = false;
+  AnalysisResult? _pending;
+
+  Future<void> _retake() async {
+    _retaking = true;
+    final replaced = await _retakePhoto(
+      context,
+      widget.target,
+      widget.photoSource,
+    );
+    if (replaced || !mounted) return;
+    _retaking = false;
+    final pending = _pending;
+    _pending = null;
+    if (pending != null) _review(pending);
+  }
+
+  void _review(AnalysisResult result) {
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute<void>(
+        builder: (_) => FoodReviewScreen(
+          uid: widget.target.uid,
+          entry: widget.target.draft(
+            result.title,
+            result.items,
+            widget.image != null ? 'photo' : 'text',
+          ),
+          isNew: true,
+          notes: result.notes,
+          image: widget.image,
+          mimeType: widget.mimeType,
+          description: widget.description,
+          analysis: result,
+          research: widget.target.research,
+          target: widget.target,
+          photoSource: widget.photoSource,
+        ),
+      ),
+    );
+  }
 
   @override
   void didChangeDependencies() {
@@ -268,25 +400,11 @@ class _AnalyzeScreenState extends State<AnalyzeScreen> {
           ? await analyzer.analyzeImage(widget.image!, widget.mimeType)
           : await analyzer.analyzeText(widget.description!);
       if (!mounted) return;
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute<void>(
-          builder: (_) => FoodReviewScreen(
-            uid: widget.target.uid,
-            entry: widget.target.draft(
-              result.title,
-              result.items,
-              widget.image != null ? 'photo' : 'text',
-            ),
-            isNew: true,
-            notes: result.notes,
-            image: widget.image,
-            mimeType: widget.mimeType,
-            description: widget.description,
-            analysis: result,
-            research: widget.target.research,
-          ),
-        ),
-      );
+      if (_retaking) {
+        _pending = result;
+      } else {
+        _review(result);
+      }
     } on AnalysisFailure catch (e) {
       if (mounted) {
         setState(() {
@@ -338,7 +456,18 @@ class _AnalyzeScreenState extends State<AnalyzeScreen> {
                 ),
                 const SizedBox(height: 4),
                 const _AnalyzeSteps(),
-                const SizedBox(height: 24),
+                if (widget.image != null) ...[
+                  const SizedBox(height: 8),
+                  Center(
+                    child: TextButton.icon(
+                      onPressed: _retake,
+                      icon: const Icon(Icons.photo_camera_rounded),
+                      label: const Text('Retake photo'),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ] else
+                  const SizedBox(height: 24),
               ] else ...[
                 Text(
                   'Could not analyze this meal',
@@ -367,6 +496,14 @@ class _AnalyzeScreenState extends State<AnalyzeScreen> {
                   ),
                 ] else
                   FilledButton(onPressed: _run, child: const Text('Try again')),
+                if (widget.image != null) ...[
+                  const SizedBox(height: 10),
+                  OutlinedButton.icon(
+                    onPressed: _retake,
+                    icon: const Icon(Icons.photo_camera_rounded),
+                    label: const Text('Retake photo'),
+                  ),
+                ],
                 const SizedBox(height: 10),
                 OutlinedButton(
                   onPressed: () => Navigator.of(context).pushReplacement(
@@ -405,6 +542,10 @@ class FoodReviewScreen extends StatefulWidget {
   final AnalysisResult? analysis;
   final bool research;
 
+  /// Set for a new meal analysed from a photo, so the user can retake it.
+  final LogTarget? target;
+  final ImageSource? photoSource;
+
   const FoodReviewScreen({
     super.key,
     required this.uid,
@@ -416,6 +557,8 @@ class FoodReviewScreen extends StatefulWidget {
     this.description,
     this.analysis,
     this.research = false,
+    this.target,
+    this.photoSource,
   });
 
   @override
@@ -427,6 +570,42 @@ class _FoodReviewScreenState extends State<FoodReviewScreen> {
   late List<FoodItem> _items = [...widget.entry.items];
   late MealType _meal = widget.entry.meal;
   bool _saving = false;
+  bool _itemsEdited = false;
+
+  bool get _canRetake =>
+      widget.isNew && widget.image != null && widget.target != null;
+
+  bool get _edited =>
+      _itemsEdited ||
+      _title.text != widget.entry.title ||
+      _meal != widget.entry.meal;
+
+  Future<void> _retake() async {
+    if (_edited) {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (dialog) => AlertDialog(
+          title: const Text('Retake photo?'),
+          content: const Text(
+            'The new photo will be analysed again and your changes to this '
+            'meal will be lost.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialog, false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dialog, true),
+              child: const Text('Retake'),
+            ),
+          ],
+        ),
+      );
+      if (ok != true || !mounted) return;
+    }
+    await _retakePhoto(context, widget.target!, widget.photoSource);
+  }
 
   FoodEntry get _entry => widget.entry.copyWith(
     title: _title.text.trim().isEmpty
@@ -458,6 +637,7 @@ class _FoodReviewScreenState extends State<FoodReviewScreen> {
     );
     if (result == null) return;
     setState(() {
+      _itemsEdited = true;
       if (index == null) {
         _items = [..._items, result];
       } else {
@@ -468,11 +648,11 @@ class _FoodReviewScreenState extends State<FoodReviewScreen> {
 
   void _setQuantity(int index, double quantity) {
     if (quantity < 0.25 || quantity > 20) return;
-    setState(
-      () =>
-          _items = [..._items]
-            ..[index] = _items[index].copyWith(quantity: quantity),
-    );
+    setState(() {
+      _itemsEdited = true;
+      _items = [..._items]
+        ..[index] = _items[index].copyWith(quantity: quantity);
+    });
   }
 
   Future<void> _save() async {
@@ -539,7 +719,26 @@ class _FoodReviewScreenState extends State<FoodReviewScreen> {
               borderRadius: BorderRadius.circular(24),
               child: AspectRatio(
                 aspectRatio: 16 / 9,
-                child: Image.memory(widget.image!, fit: BoxFit.cover),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Image.memory(widget.image!, fit: BoxFit.cover),
+                    if (_canRetake)
+                      Positioned(
+                        right: 10,
+                        bottom: 10,
+                        child: FilledButton.tonalIcon(
+                          // The theme stretches buttons to full width.
+                          style: FilledButton.styleFrom(
+                            minimumSize: const Size(0, 44),
+                          ),
+                          onPressed: _saving ? null : _retake,
+                          icon: const Icon(Icons.photo_camera_rounded),
+                          label: const Text('Retake photo'),
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ),
             const SizedBox(height: 14),
@@ -626,6 +825,29 @@ class _FoodReviewScreenState extends State<FoodReviewScreen> {
                     MacroChip('Sugar', entry.sugar, scheme.onSurfaceVariant),
                   ],
                 ),
+                if (entry.waterMl > 0)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Row(
+                      children: [
+                        const Icon(
+                          Icons.water_drop_rounded,
+                          size: 16,
+                          color: AppColors.water,
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            '${formatWater(entry.waterMl)} counts towards '
+                            'your water today',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: AppColors.water,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 if (entry.sodiumMg > 0)
                   Padding(
                     padding: const EdgeInsets.only(top: 6),
@@ -683,8 +905,10 @@ class _FoodReviewScreenState extends State<FoodReviewScreen> {
                         ),
                         IconButton(
                           tooltip: 'Remove ${_items[i].name}',
-                          onPressed: () =>
-                              setState(() => _items = [..._items]..removeAt(i)),
+                          onPressed: () => setState(() {
+                            _itemsEdited = true;
+                            _items = [..._items]..removeAt(i);
+                          }),
                           icon: const Icon(Icons.close_rounded, size: 20),
                         ),
                       ],
@@ -785,9 +1009,13 @@ class _ItemEditorState extends State<_ItemEditor> {
       ('Fiber (g)', widget.item?.fiber),
       ('Sugar (g)', widget.item?.sugar),
       ('Sodium (mg)', widget.item?.sodiumMg),
+      ('Water (ml)', widget.item?.waterMl),
     ])
       key: TextEditingController(
-        text: value == null || value == 0 ? '' : _trim(value),
+        // Keep a real 0 kcal (plain water) so the required field validates.
+        text: value == null || (value == 0 && key != 'Calories (kcal)')
+            ? ''
+            : _trim(value),
       ),
   };
 
@@ -821,6 +1049,7 @@ class _ItemEditorState extends State<_ItemEditor> {
         fiber: _value('Fiber (g)'),
         sugar: _value('Sugar (g)'),
         sodiumMg: _value('Sodium (mg)'),
+        waterMl: _value('Water (ml)'),
       ),
     );
   }
@@ -894,6 +1123,15 @@ class _ItemEditorState extends State<_ItemEditor> {
                   const SizedBox(width: 10),
                   Expanded(child: number('Sodium (mg)')),
                 ],
+              ),
+              const SizedBox(height: 12),
+              number('Water (ml)'),
+              Padding(
+                padding: const EdgeInsets.only(top: 4, left: 4),
+                child: Text(
+                  'Plain water only. It counts towards your daily water.',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
               ),
               const SizedBox(height: 20),
               FilledButton(

@@ -10,6 +10,7 @@ import 'services/food_analyzer.dart';
 import 'services/key_store.dart';
 import 'services/research_store.dart';
 import 'services/step_service.dart';
+import 'services/theme_store.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -21,7 +22,9 @@ Future<Services> _bootstrap() async {
   final options = _optionsOrNull(() => DefaultFirebaseOptions.currentPlatform);
   final keys = SecureKeyStore();
   await keys.read(); // so the UI knows straight away whether a key is saved
-  if (options == null) return Services.preview(keys: keys);
+  final theme = PrefsThemeStore();
+  await theme.load(); // so the first frame already uses the chosen theme
+  if (options == null) return Services.preview(keys: keys, theme: theme);
   await Firebase.initializeApp(options: options);
 
   // Shared Gemini runs in a second, free-plan project; see
@@ -47,6 +50,7 @@ Future<Services> _bootstrap() async {
     keys: keys,
     research: FirebaseResearchStore(),
     preview: false,
+    theme: theme,
   );
 }
 

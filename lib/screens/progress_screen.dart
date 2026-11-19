@@ -114,7 +114,12 @@ class _ProgressScreenState extends State<ProgressScreen> {
             );
 
         return ListView(
-          padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
+          padding: EdgeInsets.fromLTRB(
+            20,
+            12,
+            20,
+            floatingNavClearance(context),
+          ),
           children: [
             Text('Progress', style: theme.textTheme.headlineMedium),
             const SizedBox(height: 14),

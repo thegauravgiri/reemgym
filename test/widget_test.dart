@@ -10,8 +10,12 @@ import 'dart:io';
 
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:reemgym/screens/food_screens.dart';
 import 'package:reemgym/services/food_analyzer.dart';
 import 'package:reemgym/services/key_store.dart';
+import 'package:reemgym/services/theme_store.dart';
+import 'package:reemgym/widgets/common.dart';
 
 /// Loads the app's real fonts so layouts in tests match the device.
 Future<void> loadAppFonts() async {
@@ -126,6 +130,29 @@ void main() {
       expect(result.title, 'Momo');
       expect(result.items.single.calories, 320);
       expect(result.items.single.fiber, 0);
+      expect(result.items.single.waterMl, 0);
+    });
+
+    test('plain water in a scan is read as millilitres', () {
+      final result = parseAnalysis(
+        '{"title":"Water","notes":"","items":[{"name":"Water",'
+        '"portion":"1 bottle, 500 ml","calories":0,"protein":0,"carbs":0,'
+        '"fat":0,"waterMl":500}]}',
+      );
+      final entry = FoodEntry(
+        id: 'w',
+        dayKey: '2026-11-19',
+        meal: MealType.snack,
+        title: result.title,
+        items: [result.items.single.copyWith(quantity: 2)],
+        source: 'photo',
+        createdAt: DateTime(2026, 11, 19),
+      );
+      expect(result.items.single.waterMl, 500);
+      expect(entry.waterMl, 1000);
+      expect(formatWater(entry.waterMl), '1 L');
+      expect(formatWater(250), '250 ml');
+      expect(formatWater(1500), '1.5 L');
     });
   });
 
@@ -225,6 +252,78 @@ void main() {
     expect(days.single.weightKg, 69.5);
   });
 
+  test('water from logged drinks adds to the day in history', () async {
+    final repo = MemoryRepo();
+    final today = dayKeyOf(DateTime.now());
+    await repo.saveFood(
+      'u',
+      FoodEntry(
+        id: 'w',
+        dayKey: today,
+        meal: MealType.snack,
+        title: 'Water',
+        items: const [FoodItem(name: 'Water', waterMl: 750)],
+        source: 'photo',
+        createdAt: DateTime.now(),
+      ),
+    );
+    await repo.updateDay('u', today, waterMl: 250);
+    final days = await repo.history('u', today);
+    expect(days.single.waterMl, 1000);
+  });
+
+  testWidgets('logging water fills the water card', (tester) async {
+    tester.view.physicalSize = const Size(1170, 2532);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(ReemGymApp(services: Services.preview()));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Continue with Google'));
+    await tester.pumpAndSettle();
+    for (var i = 0; i < 6; i++) {
+      await tester.tap(find.text('Continue'));
+      await tester.pumpAndSettle();
+    }
+    await tester.tap(find.text('Start tracking'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Log'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add manually'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Food name'),
+      'Water',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Calories (kcal)'),
+      '0',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Water (ml)'),
+      '500',
+    );
+    await tester.tap(find.text('Add'));
+    await tester.pumpAndSettle();
+    expect(find.text('500 ml counts towards your water today'), findsOneWidget);
+    await tester.tap(find.text('Log meal'));
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.textContaining('500 ml from meals'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.text('0.50 L'), findsOneWidget);
+    expect(find.textContaining('500 ml from meals'), findsOneWidget);
+    // The glass's minus button only removes hand-added water.
+    final minus = tester.widget<IconButton>(
+      find.widgetWithIcon(IconButton, Icons.remove_circle_outline_rounded),
+    );
+    expect(minus.onPressed, isNull);
+  });
+
   testWidgets('sign up, onboard, then log a meal manually', (tester) async {
     tester.view.physicalSize = const Size(1170, 2532);
     tester.view.devicePixelRatio = 3;
@@ -284,5 +383,154 @@ void main() {
     );
     expect(find.text('Boiled egg'), findsOneWidget);
     expect(find.text('78 kcal'), findsWidgets);
+  });
+
+  testWidgets('retake a meal photo from the review screen', (tester) async {
+    tester.view.physicalSize = const Size(1170, 2532);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+
+    // The real picker can't run in tests; hand back a tiny fake photo.
+    final picked = <ImageSource>[];
+    XFile? nextPhoto = XFile.fromData(
+      base64Decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk'
+        '+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+      ),
+      mimeType: 'image/png',
+    );
+    final original = pickMealPhoto;
+    pickMealPhoto = (source) async {
+      picked.add(source);
+      return nextPhoto;
+    };
+    addTearDown(() => pickMealPhoto = original);
+
+    // The scan animation never settles, so step time forward instead.
+    Future<void> analyze() async {
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 2));
+      await tester.pump(const Duration(seconds: 1));
+    }
+
+    await tester.pumpWidget(ReemGymApp(services: Services.preview()));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Continue with Google'));
+    await tester.pumpAndSettle();
+    for (var i = 0; i < 6; i++) {
+      await tester.tap(find.text('Continue'));
+      await tester.pumpAndSettle();
+    }
+    await tester.tap(find.text('Start tracking'));
+    await tester.pumpAndSettle();
+
+    // Scan a meal with the camera.
+    await tester.tap(find.byTooltip('Log'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Scan a meal'));
+    await analyze();
+    expect(find.text('Review meal'), findsOneWidget);
+    expect(picked, [ImageSource.camera]);
+
+    // Cancelling the picker keeps the current result.
+    nextPhoto = null;
+    await tester.tap(find.text('Retake photo'));
+    await tester.pumpAndSettle();
+    expect(find.text('Take a new photo'), findsOneWidget);
+    // The source used last is offered first.
+    expect(
+      tester.getTopLeft(find.text('Take a new photo')).dy,
+      lessThan(tester.getTopLeft(find.text('Choose from gallery')).dy),
+    );
+    await tester.tap(find.text('Choose from gallery'));
+    await tester.pumpAndSettle();
+    expect(find.text('Review meal'), findsOneWidget);
+    expect(picked, [ImageSource.camera, ImageSource.gallery]);
+
+    // After an edit, retaking asks first; cancelling keeps the edit.
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Meal name'),
+      'My lunch',
+    );
+    await tester.tap(find.text('Retake photo'));
+    await tester.pumpAndSettle();
+    expect(find.text('Retake photo?'), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(find.text('My lunch'), findsOneWidget);
+
+    // Confirm and retake for real: the meal is analysed again.
+    nextPhoto = XFile.fromData(
+      base64Decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk'
+        '+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+      ),
+      mimeType: 'image/png',
+    );
+    await tester.tap(find.text('Retake photo'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Retake'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Take a new photo'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.text('Analyzing your meal…'), findsOneWidget);
+    await analyze();
+    expect(find.text('Review meal'), findsOneWidget);
+    expect(find.text('My lunch'), findsNothing);
+
+    // The old screens were replaced, so Back goes straight to the dashboard.
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    expect(find.text('kcal left'), findsOneWidget);
+  });
+
+  testWidgets('choosing Dark on the Profile tab switches the theme', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1170, 2532);
+    tester.view.devicePixelRatio = 3;
+    tester.platformDispatcher.platformBrightnessTestValue = Brightness.light;
+    addTearDown(tester.view.reset);
+    addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
+
+    final theme = MemoryThemeStore();
+    await tester.pumpWidget(
+      ReemGymApp(services: Services.preview(theme: theme)),
+    );
+    await tester.pumpAndSettle();
+    Brightness brightness() =>
+        Theme.of(tester.element(find.byType(Scaffold).first)).brightness;
+    // System is the default and follows the phone (light here).
+    expect(theme.mode.value, ThemeMode.system);
+    expect(brightness(), Brightness.light);
+
+    await tester.tap(find.text('Continue with Google'));
+    await tester.pumpAndSettle();
+    for (var i = 0; i < 6; i++) {
+      await tester.tap(find.text('Continue'));
+      await tester.pumpAndSettle();
+    }
+    await tester.tap(find.text('Start tracking'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Profile'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Dark'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    // Lift it clear of the floating nav bar.
+    await tester.drag(find.byType(Scrollable).first, const Offset(0, -300));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Dark'));
+    await tester.pumpAndSettle();
+    expect(theme.mode.value, ThemeMode.dark);
+    expect(brightness(), Brightness.dark);
+
+    await tester.tap(find.text('System'));
+    await tester.pumpAndSettle();
+    expect(brightness(), Brightness.light);
   });
 }

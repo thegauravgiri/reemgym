@@ -140,7 +140,7 @@ class ProfileScreen extends StatelessWidget {
     );
 
     return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
+      padding: EdgeInsets.fromLTRB(20, 12, 20, floatingNavClearance(context)),
       children: [
         Text('Profile', style: theme.textTheme.headlineMedium),
         const SizedBox(height: 16),
@@ -260,6 +260,41 @@ class ProfileScreen extends StatelessWidget {
                 'steps',
                 AppColors.steps,
                 (v) => p.copyWith(stepGoal: v),
+              ),
+            ],
+          ),
+        ),
+        heading('Appearance'),
+        Panel(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('Theme', style: theme.textTheme.bodyLarge),
+              const SizedBox(height: 12),
+              ValueListenableBuilder<ThemeMode>(
+                valueListenable: services.theme.mode,
+                builder: (context, mode, _) => SegmentedButton<ThemeMode>(
+                  showSelectedIcon: false,
+                  segments: const [
+                    ButtonSegment(
+                      value: ThemeMode.system,
+                      icon: Icon(Icons.brightness_auto_rounded),
+                      label: Text('System'),
+                    ),
+                    ButtonSegment(
+                      value: ThemeMode.light,
+                      icon: Icon(Icons.light_mode_rounded),
+                      label: Text('Light'),
+                    ),
+                    ButtonSegment(
+                      value: ThemeMode.dark,
+                      icon: Icon(Icons.dark_mode_rounded),
+                      label: Text('Dark'),
+                    ),
+                  ],
+                  selected: {mode},
+                  onSelectionChanged: (s) => services.theme.set(s.first),
+                ),
               ),
             ],
           ),

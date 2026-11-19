@@ -188,6 +188,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     double sum(double Function(FoodEntry) f) =>
         food.fold(0, (total, e) => total + f(e));
     final eaten = sum((e) => e.calories);
+    // Water from scanned or logged drinks counts alongside the glasses added
+    // by hand; only the hand-added part is stored on the day.
+    final scannedWater = sum((e) => e.waterMl).round();
     final exerciseKcal = exercise.fold(0.0, (total, e) => total + e.calories);
     final stepKcal = stepCalories(stepCount, p.weightKg);
     final burned = exerciseKcal + stepKcal;
@@ -396,7 +399,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
             const SizedBox(width: 12),
             Expanded(
               child: _WaterCard(
-                ml: day.waterMl,
+                ml: day.waterMl + scannedWater,
+                manualMl: day.waterMl,
+                fromMealsMl: scannedWater,
                 goal: p.waterGoalMl,
                 onChange: (delta) => services.repo.updateDay(
                   _uid,
@@ -468,7 +473,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     ];
 
     return ListView.builder(
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 130),
+      padding: EdgeInsets.fromLTRB(20, 12, 20, floatingNavClearance(context)),
       itemCount: sections.length,
       itemBuilder: (context, i) => i < 8
           ? sections[i]
@@ -623,11 +628,20 @@ class _StepsCard extends StatelessWidget {
 }
 
 class _WaterCard extends StatelessWidget {
+  /// Total for the day: glasses added here plus water from logged meals.
   final int ml;
+
+  /// The part added with the +/- buttons; only this can be removed here.
+  final int manualMl;
+
+  /// Water from photo scans or logged drinks; edit the meal to change it.
+  final int fromMealsMl;
   final int goal;
   final ValueChanged<int> onChange;
   const _WaterCard({
     required this.ml,
+    required this.manualMl,
+    required this.fromMealsMl,
     required this.goal,
     required this.onChange,
   });
@@ -663,14 +677,17 @@ class _WaterCard extends StatelessWidget {
               IconButton(
                 tooltip: 'Remove a glass (250 ml)',
                 visualDensity: VisualDensity.compact,
-                onPressed: ml > 0 ? () => onChange(-250) : null,
+                onPressed: manualMl > 0 ? () => onChange(-250) : null,
                 icon: const Icon(Icons.remove_circle_outline_rounded),
               ),
               Expanded(
                 child: Text(
-                  'of ${(goal / 1000).toStringAsFixed(1)} L',
+                  fromMealsMl > 0
+                      ? 'of ${(goal / 1000).toStringAsFixed(1)} L\n'
+                            '${formatWater(fromMealsMl)} from meals'
+                      : 'of ${(goal / 1000).toStringAsFixed(1)} L',
                   textAlign: TextAlign.center,
-                  maxLines: 1,
+                  maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
