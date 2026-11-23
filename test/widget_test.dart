@@ -198,6 +198,65 @@ void main() {
       );
     });
 
+    test('refining sends the current meal, the photo and the note', () async {
+      late http.Request seen;
+      final analyzer = OwnKeyFoodAnalyzer(
+        'my-key',
+        client: MockClient((request) async {
+          seen = request;
+          return http.Response.bytes(
+            utf8.encode(
+              jsonEncode({
+                'candidates': [
+                  {
+                    'content': {
+                      'parts': [
+                        {
+                          'text':
+                              '{"title":"Momo and milk","notes":"Added milk.",'
+                              '"items":[{"name":"Momo","portion":"2 × 8 pieces",'
+                              '"calories":640,"protein":36,"carbs":72,"fat":22},'
+                              '{"name":"Milk","portion":"1 glass, about 250 ml",'
+                              '"calories":150,"protein":8,"carbs":12,"fat":8}]}',
+                        },
+                      ],
+                    },
+                  },
+                ],
+              }),
+            ),
+            200,
+          );
+        }),
+      );
+      final result = await analyzer.refine(
+        'Momo',
+        const [
+          FoodItem(
+            name: 'Momo',
+            portion: '8 pieces',
+            quantity: 2,
+            calories: 320,
+            protein: 18,
+            carbs: 36,
+            fat: 11,
+          ),
+        ],
+        'I also had a glass of milk',
+        image: Uint8List.fromList([1, 2, 3]),
+      );
+      final parts = (jsonDecode(seen.body) as Map)['contents'][0]['parts'];
+      expect(parts[0]['inline_data']['data'], base64Encode([1, 2, 3]));
+      final prompt = parts[1]['text'] as String;
+      // Nutrients go out for the whole amount eaten, with the quantity shown.
+      expect(prompt, contains('"portion":"2 × 8 pieces"'));
+      expect(prompt, contains('"calories":640.0'));
+      expect(prompt, contains('I also had a glass of milk'));
+      expect(result.title, 'Momo and milk');
+      expect(result.items.map((i) => i.name), ['Momo', 'Milk']);
+      expect(result.notes, 'Added milk.');
+    });
+
     test('a rejected key gives a clear message', () async {
       final analyzer = OwnKeyFoodAnalyzer(
         'bad',
@@ -483,6 +542,80 @@ void main() {
     await tester.pageBack();
     await tester.pumpAndSettle();
     expect(find.text('kcal left'), findsOneWidget);
+  });
+
+  testWidgets('tell AI more about a scanned meal, then undo', (tester) async {
+    tester.view.physicalSize = const Size(1170, 2532);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+
+    final original = pickMealPhoto;
+    pickMealPhoto = (source) async => XFile.fromData(
+      base64Decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk'
+        '+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+      ),
+      mimeType: 'image/png',
+    );
+    addTearDown(() => pickMealPhoto = original);
+
+    await tester.pumpWidget(ReemGymApp(services: Services.preview()));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Continue with Google'));
+    await tester.pumpAndSettle();
+    for (var i = 0; i < 6; i++) {
+      await tester.tap(find.text('Continue'));
+      await tester.pumpAndSettle();
+    }
+    await tester.tap(find.text('Start tracking'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Log'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Scan a meal'));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 2));
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.text('Review meal'), findsOneWidget);
+    expect(find.text('Masala tea'), findsNothing);
+
+    final field = find.byKey(const ValueKey('refine-field'));
+    await tester.enterText(field, 'Masala tea');
+    await tester.pump();
+    await tester.tap(find.byTooltip('Update with AI'));
+    await tester.pump();
+    expect(find.text('Updating your meal…'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pumpAndSettle();
+
+    // The preview analyzer adds the note as an item.
+    final addedItem = find.descendant(
+      of: find.byType(Panel),
+      matching: find.text('Masala tea'),
+    );
+    await tester.scrollUntilVisible(
+      addedItem,
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(addedItem, findsOneWidget);
+    expect(find.text('Meal updated'), findsOneWidget);
+
+    await tester.tap(find.text('Undo'));
+    await tester.pumpAndSettle();
+    expect(
+      find.descendant(
+        of: find.byType(Panel),
+        matching: find.text('Masala tea'),
+      ),
+      findsNothing,
+    );
+    // The note goes back in the box so it can be edited and resent.
+    await tester.scrollUntilVisible(
+      field,
+      -300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(tester.widget<TextField>(field).controller!.text, 'Masala tea');
   });
 
   testWidgets('choosing Dark on the Profile tab switches the theme', (

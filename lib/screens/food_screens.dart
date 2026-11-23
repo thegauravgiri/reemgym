@@ -572,6 +572,79 @@ class _FoodReviewScreenState extends State<FoodReviewScreen> {
   bool _saving = false;
   bool _itemsEdited = false;
 
+  /// AI notes for the current estimate; replaced after each refinement.
+  late String _notes = widget.notes;
+  final _refine = TextEditingController();
+  bool _refining = false;
+
+  /// The last title the AI gave. A refinement only renames the meal while
+  /// the user hasn't typed a title of their own.
+  late String _aiTitle = widget.entry.title;
+
+  bool get _canRefine => widget.analysis != null;
+
+  Future<void> _refineWithAi() async {
+    final request = _refine.text.trim();
+    if (request.isEmpty || _refining) return;
+    FocusScope.of(context).unfocus();
+    final analyzer = Services.of(context).analyzer;
+    final sent = _items;
+    final before = (items: _items, notes: _notes, title: _title.text);
+    setState(() => _refining = true);
+    try {
+      final result = await analyzer.refine(
+        _entry.title,
+        sent,
+        request,
+        image: widget.image,
+        mimeType: widget.mimeType,
+      );
+      if (!mounted) return;
+      if (!identical(_items, sent)) {
+        showMessage(
+          context,
+          'The meal changed while AI was updating it. Send your note again.',
+        );
+        return;
+      }
+      setState(() {
+        _items = result.items;
+        _itemsEdited = true;
+        _notes = result.notes;
+        if (_title.text == _aiTitle && result.title.trim().isNotEmpty) {
+          _title.text = result.title.trim();
+          _aiTitle = _title.text;
+        }
+        _refine.clear();
+      });
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: const Text('Meal updated'),
+            action: SnackBarAction(
+              label: 'Undo',
+              onPressed: () {
+                if (!mounted) return;
+                setState(() {
+                  _items = before.items;
+                  _notes = before.notes;
+                  _title.text = before.title;
+                  _refine.text = request;
+                });
+              },
+            ),
+          ),
+        );
+    } on AnalysisFailure catch (e) {
+      if (mounted) showMessage(context, e.message);
+    } catch (e) {
+      if (mounted) showMessage(context, 'Could not update the meal. $e');
+    } finally {
+      if (mounted) setState(() => _refining = false);
+    }
+  }
+
   bool get _canRetake =>
       widget.isNew && widget.image != null && widget.target != null;
 
@@ -626,6 +699,7 @@ class _FoodReviewScreenState extends State<FoodReviewScreen> {
   @override
   void dispose() {
     _title.dispose();
+    _refine.dispose();
     super.dispose();
   }
 
@@ -743,7 +817,7 @@ class _FoodReviewScreenState extends State<FoodReviewScreen> {
             ),
             const SizedBox(height: 14),
           ],
-          if (widget.notes.isNotEmpty) ...[
+          if (_notes.isNotEmpty) ...[
             Container(
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
@@ -761,14 +835,60 @@ class _FoodReviewScreenState extends State<FoodReviewScreen> {
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
-                      '${widget.notes}\nThese are estimates. Tap any item '
-                      'to correct it.',
+                      '$_notes\nThese are estimates. Tap any item to '
+                      'correct it${_canRefine ? ', or tell AI more below' : ''}.',
                       style: theme.textTheme.bodyMedium,
                     ),
                   ),
                 ],
               ),
             ),
+            const SizedBox(height: 14),
+          ],
+          if (_canRefine) ...[
+            TextField(
+              key: const ValueKey('refine-field'),
+              controller: _refine,
+              enabled: !_refining,
+              minLines: 1,
+              maxLines: 3,
+              textCapitalization: TextCapitalization.sentences,
+              textInputAction: TextInputAction.send,
+              onSubmitted: (_) => _refineWithAi(),
+              onChanged: (_) => setState(() {}),
+              decoration: InputDecoration(
+                labelText: 'Tell AI more about this meal',
+                hintText:
+                    'e.g. "brown rice, about 2 cups" or "add a glass '
+                    'of milk"',
+                prefixIcon: const Icon(Icons.auto_awesome_rounded),
+                suffixIcon: _refining
+                    ? const Padding(
+                        padding: EdgeInsets.all(14),
+                        child: SizedBox.square(
+                          dimension: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2.5),
+                        ),
+                      )
+                    : IconButton(
+                        tooltip: 'Update with AI',
+                        onPressed: _refine.text.trim().isEmpty
+                            ? null
+                            : _refineWithAi,
+                        icon: const Icon(Icons.send_rounded),
+                      ),
+              ),
+            ),
+            if (_refining)
+              Padding(
+                padding: const EdgeInsets.only(top: 6, left: 4),
+                child: Text(
+                  'Updating your meal…',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
             const SizedBox(height: 14),
           ],
           TextField(
@@ -973,7 +1093,7 @@ class _FoodReviewScreenState extends State<FoodReviewScreen> {
         child: Padding(
           padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
           child: FilledButton(
-            onPressed: _items.isEmpty || _saving ? null : _save,
+            onPressed: _items.isEmpty || _saving || _refining ? null : _save,
             child: Text(widget.isNew ? 'Log meal' : 'Save changes'),
           ),
         ),

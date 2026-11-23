@@ -55,6 +55,17 @@ abstract class FoodAnalyzer {
     String hint,
   });
   Future<AnalysisResult> analyzeText(String description);
+
+  /// Updates an existing estimate ([title] and [items], as the user sees
+  /// them now) with more context in [request], such as "the rice was brown"
+  /// or "I also had a glass of milk". [image] is the original photo, if any.
+  Future<AnalysisResult> refine(
+    String title,
+    List<FoodItem> items,
+    String request, {
+    Uint8List? image,
+    String mimeType,
+  });
 }
 
 /// Gemini model used for food analysis. Listed as current in the Firebase AI
@@ -99,6 +110,51 @@ String _imagePrompt(String hint) => hint.trim().isEmpty
 
 String _textPrompt(String description) =>
     'Estimate the nutrition of this meal: "${description.trim()}"';
+
+double _round1(double v) => (v * 10).roundToDouble() / 10;
+
+/// Prompt for [FoodAnalyzer.refine]. Items are sent with nutrients for the
+/// whole amount eaten (quantity already applied), the same shape the model
+/// returns, so unchanged items can come back as they are.
+String refinePrompt(
+  String title,
+  List<FoodItem> items,
+  String request, {
+  bool withPhoto = false,
+}) {
+  String qty(double q) =>
+      q == q.roundToDouble() ? '${q.round()}' : '${_round1(q)}';
+  final current = jsonEncode({
+    'title': title,
+    'items': [
+      for (final i in items)
+        {
+          'name': i.name,
+          'portion': i.quantity == 1
+              ? i.portion
+              : '${qty(i.quantity)} × ${i.portion}',
+          'calories': _round1(i.totalCalories),
+          'protein': _round1(i.totalProtein),
+          'carbs': _round1(i.totalCarbs),
+          'fat': _round1(i.totalFat),
+          'fiber': _round1(i.totalFiber),
+          'sugar': _round1(i.totalSugar),
+          'sodiumMg': _round1(i.totalSodiumMg),
+          'waterMl': _round1(i.totalWaterMl),
+        },
+    ],
+  });
+  return '${withPhoto ? 'This is the meal photo you estimated earlier. ' : ''}'
+      'The current estimate, with nutrients for each whole portion, is:\n'
+      '$current\n\n'
+      'The person adds: "${request.trim()}"\n\n'
+      'Update the estimate using what they said. Correct the items it '
+      'affects (name, portion and nutrients), add foods or drinks they '
+      'mention that are missing, and remove items they say were not there. '
+      'Keep every other item exactly as it is. Return the complete updated '
+      'meal, not only the changes, and use "notes" to say briefly what you '
+      'changed.';
+}
 
 bool _looksLikeQuota(Object error) {
   final text = '$error'.toLowerCase();
@@ -224,6 +280,20 @@ class GeminiFoodAnalyzer implements FoodAnalyzer {
   Future<AnalysisResult> analyzeText(String description) =>
       _run(Content.text(_textPrompt(description)));
 
+  @override
+  Future<AnalysisResult> refine(
+    String title,
+    List<FoodItem> items,
+    String request, {
+    Uint8List? image,
+    String mimeType = 'image/jpeg',
+  }) => _run(
+    Content.multi([
+      if (image != null) InlineDataPart(mimeType, image),
+      TextPart(refinePrompt(title, items, request, withPhoto: image != null)),
+    ]),
+  );
+
   Future<AnalysisResult> _run(Content content) async {
     final String? text;
     try {
@@ -339,6 +409,21 @@ class OwnKeyFoodAnalyzer implements FoodAnalyzer {
     {'text': _textPrompt(description)},
   ]);
 
+  @override
+  Future<AnalysisResult> refine(
+    String title,
+    List<FoodItem> items,
+    String request, {
+    Uint8List? image,
+    String mimeType = 'image/jpeg',
+  }) => _run([
+    if (image != null)
+      {
+        'inline_data': {'mime_type': mimeType, 'data': base64Encode(image)},
+      },
+    {'text': refinePrompt(title, items, request, withPhoto: image != null)},
+  ]);
+
   Future<AnalysisResult> _run(List<Map<String, dynamic>> parts) async {
     final http.Response response;
     try {
@@ -423,6 +508,15 @@ class NoSharedAnalyzer implements FoodAnalyzer {
   @override
   Future<AnalysisResult> analyzeText(String description) async =>
       throw _failure;
+
+  @override
+  Future<AnalysisResult> refine(
+    String title,
+    List<FoodItem> items,
+    String request, {
+    Uint8List? image,
+    String mimeType = 'image/jpeg',
+  }) async => throw _failure;
 }
 
 /// Uses the user's own key when one is saved, otherwise the shared service.
@@ -446,6 +540,21 @@ class RoutingFoodAnalyzer implements FoodAnalyzer {
   @override
   Future<AnalysisResult> analyzeText(String description) async =>
       (await _pick()).analyzeText(description);
+
+  @override
+  Future<AnalysisResult> refine(
+    String title,
+    List<FoodItem> items,
+    String request, {
+    Uint8List? image,
+    String mimeType = 'image/jpeg',
+  }) async => (await _pick()).refine(
+    title,
+    items,
+    request,
+    image: image,
+    mimeType: mimeType,
+  );
 }
 
 /// Preview-mode analyzer: returns a fixed sample so the flow can be tried
@@ -517,5 +626,34 @@ class DemoFoodAnalyzer implements FoodAnalyzer {
   Future<AnalysisResult> analyzeText(String description) async {
     await Future<void>.delayed(const Duration(milliseconds: 1200));
     return _sample;
+  }
+
+  /// Adds the request as a sample item so the refine flow can be tried.
+  @override
+  Future<AnalysisResult> refine(
+    String title,
+    List<FoodItem> items,
+    String request, {
+    Uint8List? image,
+    String mimeType = 'image/jpeg',
+  }) async {
+    await Future<void>.delayed(const Duration(milliseconds: 800));
+    return AnalysisResult(
+      title,
+      [
+        ...items,
+        FoodItem(
+          name: request.trim(),
+          portion: '1 serving (sample)',
+          calories: 100,
+          protein: 3,
+          carbs: 15,
+          fat: 3,
+        ),
+      ],
+      'Preview mode: your note was added as a sample item. Connect Firebase '
+      'or add your own Gemini key to refine real meals.',
+      model: 'sample',
+    );
   }
 }

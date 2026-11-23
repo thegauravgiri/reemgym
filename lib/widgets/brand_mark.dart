@@ -45,10 +45,7 @@ class _ReemMarkPainter extends CustomPainter {
       ..moveTo(76, 164)
       ..lineTo(76, 40)
       ..lineTo(110, 40)
-      ..arcToPoint(
-        const Offset(110, 104),
-        radius: const Radius.circular(32),
-      )
+      ..arcToPoint(const Offset(110, 104), radius: const Radius.circular(32))
       ..lineTo(76, 104)
       ..moveTo(106, 104)
       ..lineTo(146, 164);
