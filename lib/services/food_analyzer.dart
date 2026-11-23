@@ -1,8 +1,9 @@
+import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:firebase_ai/firebase_ai.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../models.dart';
@@ -54,17 +55,46 @@ abstract class FoodAnalyzer {
     String hint,
   });
   Future<AnalysisResult> analyzeText(String description);
+
+  /// Updates an existing estimate ([title] and [items], as the user sees
+  /// them now) with more context in [request], such as "the rice was brown"
+  /// or "I also had a glass of milk". [image] is the original photo, if any.
+  Future<AnalysisResult> refine(
+    String title,
+    List<FoodItem> items,
+    String request, {
+    Uint8List? image,
+    String mimeType,
+  });
 }
 
 /// Gemini model used for food analysis. Listed as current in the Firebase AI
 /// Logic model list (Nov 2026); change it here when Google retires it.
-const geminiModel = 'gemini-3.8-flash';
+///
+/// Flash-Lite, not Flash: on the free tier (Nov 2026) `gemini-3.8-flash`
+/// requests hung for more than 75 s, while Flash-Lite answered the full food
+/// prompt with a photo in 2–4 s.
+const geminiModel = 'gemini-3.5-flash-lite';
+
+/// Longest a scan may take before the app gives up and says so.
+const analysisTimeout = Duration(seconds: 40);
+
+const _timeoutFailure = AnalysisFailure(
+  'Food analysis is taking too long right now. Try again in a moment, or '
+  'enter the food manually.',
+);
 
 const _instructions = '''
 You are a careful nutritionist estimating what a person ate.
 Break the meal into its separate foods and drinks. For each one, estimate the
-portion actually shown or described (use household measures plus grams, e.g.
-"1 cup, about 160 g") and the nutrients for that whole portion.
+portion actually shown or described and the nutrients for that whole portion.
+Give food portions as household measures plus grams (e.g. "1 cup, about
+160 g"). Give drinks in millilitres or litres, never grams or kilograms (e.g.
+"1 glass, about 250 ml" or "1 bottle, 1 L").
+Set "waterMl" to the millilitres of plain drinking water in the item (still,
+sparkling or mineral water with nothing added). Use 0 for every other food or
+drink, including tea, coffee, juice, milk and soft drinks. Plain water has 0
+calories and nutrients.
 Recognise regional dishes by their real names (for example dal bhat, momo,
 chow mein, sel roti) and account for typical cooking oil, ghee and sauces.
 Use visible references such as plates, cutlery and hands to judge size.
@@ -81,6 +111,51 @@ String _imagePrompt(String hint) => hint.trim().isEmpty
 String _textPrompt(String description) =>
     'Estimate the nutrition of this meal: "${description.trim()}"';
 
+double _round1(double v) => (v * 10).roundToDouble() / 10;
+
+/// Prompt for [FoodAnalyzer.refine]. Items are sent with nutrients for the
+/// whole amount eaten (quantity already applied), the same shape the model
+/// returns, so unchanged items can come back as they are.
+String refinePrompt(
+  String title,
+  List<FoodItem> items,
+  String request, {
+  bool withPhoto = false,
+}) {
+  String qty(double q) =>
+      q == q.roundToDouble() ? '${q.round()}' : '${_round1(q)}';
+  final current = jsonEncode({
+    'title': title,
+    'items': [
+      for (final i in items)
+        {
+          'name': i.name,
+          'portion': i.quantity == 1
+              ? i.portion
+              : '${qty(i.quantity)} × ${i.portion}',
+          'calories': _round1(i.totalCalories),
+          'protein': _round1(i.totalProtein),
+          'carbs': _round1(i.totalCarbs),
+          'fat': _round1(i.totalFat),
+          'fiber': _round1(i.totalFiber),
+          'sugar': _round1(i.totalSugar),
+          'sodiumMg': _round1(i.totalSodiumMg),
+          'waterMl': _round1(i.totalWaterMl),
+        },
+    ],
+  });
+  return '${withPhoto ? 'This is the meal photo you estimated earlier. ' : ''}'
+      'The current estimate, with nutrients for each whole portion, is:\n'
+      '$current\n\n'
+      'The person adds: "${request.trim()}"\n\n'
+      'Update the estimate using what they said. Correct the items it '
+      'affects (name, portion and nutrients), add foods or drinks they '
+      'mention that are missing, and remove items they say were not there. '
+      'Keep every other item exactly as it is. Return the complete updated '
+      'meal, not only the changes, and use "notes" to say briefly what you '
+      'changed.';
+}
+
 bool _looksLikeQuota(Object error) {
   final text = '$error'.toLowerCase();
   return text.contains('429') ||
@@ -88,6 +163,18 @@ bool _looksLikeQuota(Object error) {
       text.contains('resource_exhausted') ||
       text.contains('resource has been exhausted') ||
       text.contains('rate limit');
+}
+
+/// The service answered but turned the app away (App Check enforcement, a
+/// disabled API, or a rejected key), as opposed to a network failure.
+bool _looksLikeRefused(Object error) {
+  final text = '$error'.toLowerCase();
+  return text.contains('app check') ||
+      text.contains('unauthenticated') ||
+      text.contains('permission_denied') ||
+      text.contains('permission denied') ||
+      text.contains('api key not valid') ||
+      text.contains('has not been used in project');
 }
 
 AnalysisResult _finish(String? text, {required bool ownKey}) {
@@ -155,7 +242,8 @@ class GeminiFoodAnalyzer implements FoodAnalyzer {
               properties: {
                 'name': Schema.string(),
                 'portion': Schema.string(
-                  description: 'Estimated portion, e.g. "1 cup, about 160 g"',
+                  description:
+                      'Estimated portion, e.g. "1 cup, about 160 g"; drinks in ml or L',
                 ),
                 'calories': Schema.number(description: 'kcal for the portion'),
                 'protein': Schema.number(description: 'grams'),
@@ -164,6 +252,10 @@ class GeminiFoodAnalyzer implements FoodAnalyzer {
                 'fiber': Schema.number(description: 'grams'),
                 'sugar': Schema.number(description: 'grams'),
                 'sodiumMg': Schema.number(description: 'milligrams'),
+                'waterMl': Schema.number(
+                  description:
+                      'Millilitres of plain drinking water; 0 if not water',
+                ),
               },
             ),
           ),
@@ -188,10 +280,27 @@ class GeminiFoodAnalyzer implements FoodAnalyzer {
   Future<AnalysisResult> analyzeText(String description) =>
       _run(Content.text(_textPrompt(description)));
 
+  @override
+  Future<AnalysisResult> refine(
+    String title,
+    List<FoodItem> items,
+    String request, {
+    Uint8List? image,
+    String mimeType = 'image/jpeg',
+  }) => _run(
+    Content.multi([
+      if (image != null) InlineDataPart(mimeType, image),
+      TextPart(refinePrompt(title, items, request, withPhoto: image != null)),
+    ]),
+  );
+
   Future<AnalysisResult> _run(Content content) async {
     final String? text;
     try {
-      text = (await _model.generateContent([content])).text;
+      text = (await _model.generateContent([content]).timeout(analysisTimeout))
+          .text;
+    } on TimeoutException {
+      throw _timeoutFailure;
     } catch (e) {
       if (_looksLikeQuota(e)) {
         throw const AnalysisFailure(
@@ -201,9 +310,17 @@ class GeminiFoodAnalyzer implements FoodAnalyzer {
           quotaExceeded: true,
         );
       }
-      throw AnalysisFailure(
-        'Could not reach the food analysis service. Check your connection '
-        'and try again.\n($e)',
+      debugPrint('Shared food analysis failed: $e');
+      if (_looksLikeRefused(e)) {
+        throw const AnalysisFailure(
+          'Shared food analysis is not available right now. Add your own '
+          'free Gemini key to scan, or enter the food manually.',
+          quotaExceeded: true,
+        );
+      }
+      throw const AnalysisFailure(
+        'Could not reach the food analysis service. Check your internet '
+        'connection and try again.',
       );
     }
     return _finish(text, ownKey: false);
@@ -229,8 +346,17 @@ const _restSchema = {
           'fiber': {'type': 'NUMBER'},
           'sugar': {'type': 'NUMBER'},
           'sodiumMg': {'type': 'NUMBER'},
+          'waterMl': {'type': 'NUMBER'},
         },
-        'required': ['name', 'portion', 'calories', 'protein', 'carbs', 'fat'],
+        'required': [
+          'name',
+          'portion',
+          'calories',
+          'protein',
+          'carbs',
+          'fat',
+          'waterMl',
+        ],
       },
     },
   },
@@ -283,6 +409,21 @@ class OwnKeyFoodAnalyzer implements FoodAnalyzer {
     {'text': _textPrompt(description)},
   ]);
 
+  @override
+  Future<AnalysisResult> refine(
+    String title,
+    List<FoodItem> items,
+    String request, {
+    Uint8List? image,
+    String mimeType = 'image/jpeg',
+  }) => _run([
+    if (image != null)
+      {
+        'inline_data': {'mime_type': mimeType, 'data': base64Encode(image)},
+      },
+    {'text': refinePrompt(title, items, request, withPhoto: image != null)},
+  ]);
+
   Future<AnalysisResult> _run(List<Map<String, dynamic>> parts) async {
     final http.Response response;
     try {
@@ -312,7 +453,9 @@ class OwnKeyFoodAnalyzer implements FoodAnalyzer {
               },
             }),
           )
-          .timeout(const Duration(seconds: 60));
+          .timeout(analysisTimeout);
+    } on TimeoutException {
+      throw _timeoutFailure;
     } catch (_) {
       throw const AnalysisFailure(
         'Could not reach Google. Check your connection and try again.',
@@ -365,6 +508,15 @@ class NoSharedAnalyzer implements FoodAnalyzer {
   @override
   Future<AnalysisResult> analyzeText(String description) async =>
       throw _failure;
+
+  @override
+  Future<AnalysisResult> refine(
+    String title,
+    List<FoodItem> items,
+    String request, {
+    Uint8List? image,
+    String mimeType = 'image/jpeg',
+  }) async => throw _failure;
 }
 
 /// Uses the user's own key when one is saved, otherwise the shared service.
@@ -388,6 +540,21 @@ class RoutingFoodAnalyzer implements FoodAnalyzer {
   @override
   Future<AnalysisResult> analyzeText(String description) async =>
       (await _pick()).analyzeText(description);
+
+  @override
+  Future<AnalysisResult> refine(
+    String title,
+    List<FoodItem> items,
+    String request, {
+    Uint8List? image,
+    String mimeType = 'image/jpeg',
+  }) async => (await _pick()).refine(
+    title,
+    items,
+    request,
+    image: image,
+    mimeType: mimeType,
+  );
 }
 
 /// Preview-mode analyzer: returns a fixed sample so the flow can be tried
@@ -459,5 +626,34 @@ class DemoFoodAnalyzer implements FoodAnalyzer {
   Future<AnalysisResult> analyzeText(String description) async {
     await Future<void>.delayed(const Duration(milliseconds: 1200));
     return _sample;
+  }
+
+  /// Adds the request as a sample item so the refine flow can be tried.
+  @override
+  Future<AnalysisResult> refine(
+    String title,
+    List<FoodItem> items,
+    String request, {
+    Uint8List? image,
+    String mimeType = 'image/jpeg',
+  }) async {
+    await Future<void>.delayed(const Duration(milliseconds: 800));
+    return AnalysisResult(
+      title,
+      [
+        ...items,
+        FoodItem(
+          name: request.trim(),
+          portion: '1 serving (sample)',
+          calories: 100,
+          protein: 3,
+          carbs: 15,
+          fat: 3,
+        ),
+      ],
+      'Preview mode: your note was added as a sample item. Connect Firebase '
+      'or add your own Gemini key to refine real meals.',
+      model: 'sample',
+    );
   }
 }

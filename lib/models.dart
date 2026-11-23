@@ -200,6 +200,10 @@ class FoodItem {
   final double sugar;
   final double sodiumMg;
 
+  /// Plain drinking water in one [quantity] unit, in millilitres. Counted
+  /// towards the day's water goal; 0 for everything that isn't water.
+  final double waterMl;
+
   const FoodItem({
     required this.name,
     this.portion = '1 serving',
@@ -211,6 +215,7 @@ class FoodItem {
     this.fiber = 0,
     this.sugar = 0,
     this.sodiumMg = 0,
+    this.waterMl = 0,
   });
 
   double get totalCalories => calories * quantity;
@@ -220,6 +225,7 @@ class FoodItem {
   double get totalFiber => fiber * quantity;
   double get totalSugar => sugar * quantity;
   double get totalSodiumMg => sodiumMg * quantity;
+  double get totalWaterMl => waterMl * quantity;
 
   FoodItem copyWith({
     String? name,
@@ -232,6 +238,7 @@ class FoodItem {
     double? fiber,
     double? sugar,
     double? sodiumMg,
+    double? waterMl,
   }) => FoodItem(
     name: name ?? this.name,
     portion: portion ?? this.portion,
@@ -243,6 +250,7 @@ class FoodItem {
     fiber: fiber ?? this.fiber,
     sugar: sugar ?? this.sugar,
     sodiumMg: sodiumMg ?? this.sodiumMg,
+    waterMl: waterMl ?? this.waterMl,
   );
 
   Map<String, dynamic> toMap() => {
@@ -256,6 +264,7 @@ class FoodItem {
     'fiber': fiber,
     'sugar': sugar,
     'sodiumMg': sodiumMg,
+    'waterMl': waterMl,
   };
 
   factory FoodItem.fromMap(Map<String, dynamic> m) => FoodItem(
@@ -269,6 +278,7 @@ class FoodItem {
     fiber: _d(m['fiber']),
     sugar: _d(m['sugar']),
     sodiumMg: _d(m['sodiumMg']),
+    waterMl: _d(m['waterMl']),
   );
 }
 
@@ -298,6 +308,9 @@ class FoodEntry {
   double get calories => _sum((i) => i.totalCalories);
   double get protein => _sum((i) => i.totalProtein);
   double get carbs => _sum((i) => i.totalCarbs);
+
+  /// Plain water logged in this entry, in millilitres.
+  double get waterMl => _sum((i) => i.totalWaterMl);
   double get fat => _sum((i) => i.totalFat);
   double get fiber => _sum((i) => i.totalFiber);
   double get sugar => _sum((i) => i.totalSugar);

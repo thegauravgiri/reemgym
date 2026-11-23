@@ -61,6 +61,7 @@ List<DaySummary> _summarise(
     if (s == null) continue;
     s.eaten += f.calories;
     s.protein += f.protein;
+    s.waterMl += f.waterMl.round();
     s.foodCount++;
   }
   for (final e in exercise) {
@@ -70,7 +71,7 @@ List<DaySummary> _summarise(
     final s = out[d.dayKey];
     if (s == null) continue;
     s.steps = d.steps;
-    s.waterMl = d.waterMl;
+    s.waterMl += d.waterMl;
     s.weightKg = d.weightKg;
   }
   return out.values.toList();

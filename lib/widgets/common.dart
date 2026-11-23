@@ -283,3 +283,37 @@ String formatNumber(num n) {
   }
   return b.toString();
 }
+
+/// Water volume for display: "250 ml" under a litre, "1.5 L" from a litre up.
+String formatWater(num ml) {
+  if (ml < 1000) return '${ml.round()} ml';
+  var text = (ml / 1000).toStringAsFixed(2);
+  while (text.endsWith('0')) {
+    text = text.substring(0, text.length - 1);
+  }
+  if (text.endsWith('.')) text = text.substring(0, text.length - 1);
+  return '$text L';
+}
+
+/// Height of the floating bottom nav pill and Log button in the home shell.
+const double kFloatingNavHeight = 68;
+
+/// Gap between the floating nav and the bottom safe area.
+const double kFloatingNavMargin = 12;
+
+/// Bottom padding for a scrolling tab body so its last item can scroll fully
+/// clear of the floating nav (nav height, its margin, the device's bottom
+/// inset such as the gesture bar, plus some breathing room).
+///
+/// Inside the home shell's `Scaffold(extendBody: true)` the body's
+/// `MediaQuery` bottom padding already includes the nav; the explicit sum is
+/// a fallback so the result is never smaller than the nav's footprint.
+double floatingNavClearance(BuildContext context, {double gap = 24}) {
+  final covered = max(
+    MediaQuery.paddingOf(context).bottom,
+    MediaQuery.viewPaddingOf(context).bottom +
+        kFloatingNavHeight +
+        kFloatingNavMargin,
+  );
+  return covered + gap;
+}

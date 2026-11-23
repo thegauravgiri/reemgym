@@ -4,6 +4,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 import '../app.dart';
 import '../services/auth_service.dart';
 import '../theme.dart';
+import '../widgets/brand_mark.dart';
 import '../widgets/fx.dart';
 
 class AuthScreen extends StatefulWidget {
@@ -129,10 +130,11 @@ class _AuthScreenState extends State<AuthScreen> {
                                   ),
                                 ],
                               ),
-                              child: const Icon(
-                                Icons.bolt_rounded,
-                                size: 42,
-                                color: Color(0xFF10160A),
+                              child: const Center(
+                                child: ReemMark(
+                                  size: 50,
+                                  color: Color(0xFF10160A),
+                                ),
                               ),
                             ),
                           ).animate().scale(

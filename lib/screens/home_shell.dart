@@ -149,7 +149,7 @@ class _FloatingNav extends StatelessWidget {
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 480),
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, kFloatingNavMargin),
             child: Row(
               children: [
                 Expanded(
@@ -158,7 +158,7 @@ class _FloatingNav extends StatelessWidget {
                     child: BackdropFilter(
                       filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
                       child: Container(
-                        height: 68,
+                        height: kFloatingNavHeight,
                         padding: const EdgeInsets.all(8),
                         decoration: BoxDecoration(
                           color: scheme.surfaceContainerHigh.withValues(
@@ -238,8 +238,8 @@ class _FloatingNav extends StatelessWidget {
                     shape: const CircleBorder(),
                     clipBehavior: Clip.antiAlias,
                     child: Ink(
-                      width: 68,
-                      height: 68,
+                      width: kFloatingNavHeight,
+                      height: kFloatingNavHeight,
                       decoration: BoxDecoration(
                         gradient: AppColors.brand,
                         shape: BoxShape.circle,
